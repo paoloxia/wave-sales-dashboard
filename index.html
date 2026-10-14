@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vendite Wave</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Funnel+Sans:wght@400;600;700&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+  :root { --bg:#f6f5f2; --card:#fff; --ink:#151515; --mute:#6b6b6b; --line:#e4e2dd; --accent:#e5487f; --soft:#f7d3e0; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font-family:"Funnel Sans",system-ui,sans-serif; }
+  main { max-width:1000px; margin:0 auto; padding:32px 16px 64px; }
+  h1 { font-size:28px; margin:0 0 4px; letter-spacing:-.01em; }
+  .sub { color:var(--mute); margin:0 0 24px; }
+  #drop { border:2px dashed var(--line); border-radius:14px; background:var(--card); padding:40px 16px; text-align:center; cursor:pointer; transition:.15s; }
+  #drop.over { border-color:var(--accent); background:var(--soft); }
+  #drop b { display:block; font-size:18px; margin-bottom:6px; }
+  #drop span { color:var(--mute); font-size:14px; }
+  #err { color:#b00020; margin-top:12px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:12px; margin:24px 0; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:16px 18px; }
+  .kpi .v { font-size:30px; font-weight:700; margin-top:4px; }
+  .kpi .l { color:var(--mute); font-size:13px; }
+  .kpi .d { font-size:13px; margin-top:4px; color:var(--mute); }
+  h2 { font-size:16px; margin:0 0 12px; }
+  .two { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:12px; }
+  @media (max-width:700px) { .two { grid-template-columns:1fr; } }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  td, th { padding:6px 4px; border-bottom:1px solid var(--line); text-align:left; }
+  th { color:var(--mute); font-weight:600; font-size:12px; }
+  td.n, th.n { text-align:right; font-variant-numeric:tabular-nums; }
+  .bar { height:8px; background:var(--accent); border-radius:4px; }
+  #chart { width:100%; overflow-x:auto; }
+  #chart svg { display:block; }
+  .meta { color:var(--mute); font-size:13px; margin-top:20px; }
+  #out { display:none; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Vendite Wave</h1>
+  <p class="sub">Trascina qui l'export ordini di WH-Metrics (file <i>wave-by-vento-2027-orders.xlsx</i>). Il file resta sul tuo computer: non viene caricato da nessuna parte.</p>
+
+  <div id="drop"><b>Trascina qui l'Excel degli ordini</b><span>oppure clicca per sceglierlo</span></div>
+  <input id="file" type="file" accept=".xlsx,.xls" hidden>
+  <div id="err"></div>
+
+  <div id="out">
+    <div class="grid" id="kpis"></div>
+    <div class="card" style="margin-bottom:12px">
+      <h2>Pass venduti per giorno</h2>
+      <div id="chart"></div>
+    </div>
+    <div class="two">
+      <div class="card"><h2>Per tipo di pass</h2><table id="bypass"></table></div>
+      <div class="card"><h2>Per paese</h2><table id="bycountry"></table></div>
+    </div>
+    <div class="card"><h2>Ultimi 14 giorni</h2><table id="bydays"></table></div>
+    <p class="meta" id="meta"></p>
+  </div>
+</main>
+<script>
+// Regole (le stesse della scheda Vendite 2027 dell'attendee hub):
+// - contano solo ordini COMPLETED con importo pagato >= 10 € (sotto sono ordini di test con codici a 0 € o 1 €)
+// - "netto" = colonna Net Price (totale riga IVA esclusa), "lordo" = payment_amount
+const eur = n => n.toLocaleString("it-IT", { style: "currency", currency: "EUR", maximumFractionDigits: 0 });
+const num = n => n.toLocaleString("it-IT");
+const $ = id => document.getElementById(id);
+
+const drop = $("drop"), input = $("file");
+drop.onclick = () => input.click();
+input.onchange = () => input.files[0] && read(input.files[0]);
+drop.ondragover = e => { e.preventDefault(); drop.classList.add("over"); };
+drop.ondragleave = () => drop.classList.remove("over");
+drop.ondrop = e => { e.preventDefault(); drop.classList.remove("over"); e.dataTransfer.files[0] && read(e.dataTransfer.files[0]); };
+
+function read(file) {
+  $("err").textContent = "";
+  file.arrayBuffer().then(buf => {
+    try { render(parse(buf), file.name); }
+    catch (e) { $("err").textContent = e.message; $("out").style.display = "none"; }
+  });
+}
+
+function parse(buf) {
+  const wb = XLSX.read(buf, { cellDates: true });
+  const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, defval: null });
+  const h = rows[0] || [], sub = rows[1] || [];
+  const c = name => h.indexOf(name);
+  const need = ["status", "payment_amount", "created_at", "Product 1"];
+  const missing = need.filter(n => c(n) < 0);
+  if (missing.length || sub.indexOf("Quantity") < 0 || sub.indexOf("Net Price") < 0)
+    throw new Error("Non sembra un export ordini di WH-Metrics (mancano le colonne " + (missing.join(", ") || "Quantity/Net Price") + "). Scarica da WH: Ordini > Esporta.");
+  const q = sub.indexOf("Quantity"), n = sub.indexOf("Net Price");
+  const all = rows.slice(2).filter(r => r[c("status")]);
+  const ok = all.filter(r => r[c("status")] === "COMPLETED" && toNum(r[c("payment_amount")]) >= 10);
+  return {
+    pending: all.filter(r => r[c("status")] === "PENDING").length,
+    orders: ok.map(r => ({
+      date: toDate(r[c("created_at")]),
+      product: r[c("Product 1")] || "Altro",
+      qty: toNum(r[q]),
+      net: toNum(r[n]),
+      gross: toNum(r[c("payment_amount")]),
+      country: r[c("INVOICE_work_country")] || "n/d",
+      company: r[c("INVOICE_customer_type")] === "azienda",
+    })),
+  };
+}
+
+// alcuni export WH scrivono gli importi come testo ("1,600.00"): tolgo le virgole delle migliaia
+function toNum(v) {
+  return typeof v === "string" ? Number(v.replace(/,/g, "")) || 0 : Number(v) || 0;
+}
+
+function toDate(v) {
+  if (v instanceof Date) return v;
+  return new Date(String(v).replace(" ", "T"));
+}
+const dayKey = d => d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+const dayLabel = k => k.slice(8, 10) + "/" + k.slice(5, 7);
+
+function group(list, key) {
+  const m = new Map();
+  for (const o of list) {
+    const k = key(o), g = m.get(k) || { qty: 0, net: 0, orders: 0 };
+    g.qty += o.qty; g.net += o.net; g.orders++; m.set(k, g);
+  }
+  return m;
+}
+
+function render({ orders, pending }, filename) {
+  if (!orders.length) throw new Error("Nel file non c'è nessun ordine completato.");
+  const sum = (l, f) => l.reduce((a, o) => a + o[f], 0);
+  const passes = sum(orders, "qty"), net = sum(orders, "net");
+  const last = new Date(Math.max(...orders.map(o => o.date)));
+
+  // ultimi 7 giorni vs i 7 prima, contati dall'ultimo ordine nel file
+  const days = group(orders, o => dayKey(o.date));
+  const back = i => { const d = new Date(last); d.setDate(d.getDate() - i); return dayKey(d); };
+  const span = (a, b) => { let s = 0; for (let i = a; i < b; i++) s += (days.get(back(i)) || { qty: 0 }).qty; return s; };
+  const w1 = span(0, 7), w0 = span(7, 14);
+  const trend = w0 ? (w1 >= w0 ? "+" : "") + Math.round((w1 - w0) / w0 * 100) + "% sui 7 giorni prima" : "";
+
+  $("kpis").innerHTML = [
+    ["Pass venduti", num(passes), num(orders.length) + " ordini"],
+    ["Incasso netto", eur(net), "lordo " + eur(sum(orders, "gross"))],
+    ["Ultimi 7 giorni", num(w1) + " pass", trend],
+    ["Prezzo medio", eur(net / passes), "netto per pass"],
+    ["Ordini aziende", Math.round(orders.filter(o => o.company).length / orders.length * 100) + "%", "il resto privati"],
+    ["Carrelli in sospeso", num(pending), "ordini PENDING"],
+  ].map(([l, v, d]) => `<div class="card kpi"><div class="l">${l}</div><div class="v">${v}</div><div class="d">${d}</div></div>`).join("");
+
+  table("bypass", group(orders, o => o.product), passes, "Pass");
+  table("bycountry", group(orders, o => o.country), passes, "Paese", 10);
+
+  // ultimi 14 giorni, anche quelli a zero
+  let rowsHtml = "<tr><th>Giorno</th><th class='n'>Pass</th><th class='n'>Netto</th></tr>";
+  for (let i = 0; i < 14; i++) {
+    const k = back(i), g = days.get(k) || { qty: 0, net: 0 };
+    rowsHtml += `<tr><td>${dayLabel(k)}</td><td class="n">${num(g.qty)}</td><td class="n">${eur(g.net)}</td></tr>`;
+  }
+  $("bydays").innerHTML = rowsHtml;
+
+  chart(days);
+  $("meta").textContent = `File: ${filename} · ultimo ordine ${last.toLocaleString("it-IT")} · contati solo ordini completati da almeno 10 € (sotto sono test).`;
+  $("out").style.display = "block";
+}
+
+function table(id, m, total, label, limit) {
+  const rows = [...m.entries()].sort((a, b) => b[1].qty - a[1].qty).slice(0, limit || 99);
+  $(id).innerHTML = `<tr><th>${label}</th><th class="n">Pass</th><th class="n">Netto</th><th style="width:30%"></th></tr>` +
+    rows.map(([k, g]) => `<tr><td>${k}</td><td class="n">${num(g.qty)}</td><td class="n">${eur(g.net)}</td>
+      <td><div class="bar" style="width:${(g.qty / total * 100).toFixed(1)}%"></div></td></tr>`).join("");
+}
+
+function chart(days) {
+  // tutti i giorni dal primo all'ultimo ordine, anche quelli a zero
+  const keys = [...days.keys()].sort();
+  const d = toDate(keys[0] + " 12:00:00"), end = keys[keys.length - 1], all = [];
+  while (dayKey(d) <= end) { all.push(dayKey(d)); d.setDate(d.getDate() + 1); }
+  const vals = all.map(k => (days.get(k) || { qty: 0 }).qty), max = Math.max(...vals, 1);
+  const bw = Math.max(10, Math.min(28, 900 / all.length)), H = 180, W = all.length * bw;
+  const every = Math.ceil(all.length / 15);
+  let s = `<svg width="${W}" height="${H + 30}" role="img" aria-label="Pass venduti per giorno">`;
+  all.forEach((k, i) => {
+    const h = vals[i] / max * H, x = i * bw;
+    s += `<rect x="${x + 2}" y="${H - h}" width="${bw - 4}" height="${h}" rx="2" fill="var(--accent)"><title>${dayLabel(k)}: ${vals[i]} pass</title></rect>`;
+    if (vals[i] && (vals[i] === max || all.length <= 20)) s += `<text x="${x + bw / 2}" y="${H - h - 4}" text-anchor="middle" font-size="11" fill="var(--ink)">${vals[i]}</text>`;
+    if (i % every === 0) s += `<text x="${x + bw / 2}" y="${H + 16}" text-anchor="middle" font-size="11" fill="var(--mute)">${dayLabel(k)}</text>`;
+  });
+  $("chart").innerHTML = s + "</svg>";
+}
+</script>
+</body>
+</html>
