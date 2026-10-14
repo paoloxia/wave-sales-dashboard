@@ -182,16 +182,16 @@ function chart(days) {
   const d = toDate(keys[0] + " 12:00:00"), end = keys[keys.length - 1], all = [];
   while (dayKey(d) <= end) { all.push(dayKey(d)); d.setDate(d.getDate() + 1); }
   const vals = all.map(k => (days.get(k) || { qty: 0 }).qty), max = Math.max(...vals, 1);
-  const bw = Math.max(10, Math.min(28, 900 / all.length)), H = 180, W = all.length * bw;
-  const every = Math.ceil(all.length / 15);
-  let s = `<svg width="${W}" height="${H + 30}" role="img" aria-label="Pass venduti per giorno">`;
+  const bw = Math.max(10, Math.min(60, 900 / all.length)), H = 180, T = 18, W = all.length * bw;
+  const every = Math.ceil(40 / bw); // una data ogni ~40px, così non si accavallano
+  let s = `<svg width="${W}" height="${T + H + 30}" role="img" aria-label="Pass venduti per giorno"><g transform="translate(0 ${T})">`;
   all.forEach((k, i) => {
     const h = vals[i] / max * H, x = i * bw;
     s += `<rect x="${x + 2}" y="${H - h}" width="${bw - 4}" height="${h}" rx="2" fill="var(--accent)"><title>${dayLabel(k)}: ${vals[i]} pass</title></rect>`;
     if (vals[i] && (vals[i] === max || all.length <= 20)) s += `<text x="${x + bw / 2}" y="${H - h - 4}" text-anchor="middle" font-size="11" fill="var(--ink)">${vals[i]}</text>`;
     if (i % every === 0) s += `<text x="${x + bw / 2}" y="${H + 16}" text-anchor="middle" font-size="11" fill="var(--mute)">${dayLabel(k)}</text>`;
   });
-  $("chart").innerHTML = s + "</svg>";
+  $("chart").innerHTML = s + "</g></svg>";
 }
 </script>
 </body>
